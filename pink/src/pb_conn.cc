@@ -20,10 +20,8 @@ PbConn::PbConn(const int fd, const std::string &ip_port, Thread *thread, PinkEpo
   rbuf_len_(0),
   remain_packet_len_(0),
   connStatus_(kHeader),
-  wbuf_len_(0),
-  wbuf_pos_(0),
+  write_buf_(0),
   is_reply_(0) {
-  response_.reserve(DEFAULT_WBUF_SIZE);
   rbuf_ = reinterpret_cast<char *>(malloc(sizeof(char) * PB_IOBUF_LEN));
   rbuf_len_ = PB_IOBUF_LEN;
 }
@@ -118,37 +116,36 @@ ReadStatus PbConn::GetRequest() {
 
 WriteStatus PbConn::SendReply() {
   ssize_t nwritten = 0;
-  {
+  size_t item_len;
   slash::MutexLock l(&resp_mu_);
-  wbuf_len_ = response_.size();
-  while (wbuf_len_ > 0) {
-    nwritten = write(fd(), response_.data() + wbuf_pos_, wbuf_len_ - wbuf_pos_);
-    if (nwritten <= 0) {
-      break;
+  while (!write_buf_.queue_.empty()) {
+    std::string item = write_buf_.queue_.front();
+    item_len = item.size();
+    while (item_len - write_buf_.item_pos_ > 0) {
+      nwritten = write(fd(), item.data() + write_buf_.item_pos_, item_len - write_buf_.item_pos_);
+      if (nwritten <= 0) {
+        break;
+      }
+      write_buf_.item_pos_ += nwritten;
+      if (write_buf_.item_pos_ == item_len) {
+        write_buf_.queue_.pop();
+        write_buf_.item_pos_ = 0;
+        item_len = 0;
+      }
     }
-    wbuf_pos_ += nwritten;
-    if (wbuf_pos_ == wbuf_len_) {
-      std::string buf;
-      buf.reserve(DEFAULT_WBUF_SIZE); // for now 256k
-      response_.swap(buf);
-      wbuf_len_ = 0;
-      wbuf_pos_ = 0;
+    if (nwritten == -1) {
+      if (errno == EAGAIN) {
+        return kWriteHalf;
+      } else {
+        // Here we should close the connection
+        return kWriteError;
+      }
     }
-  }
-  }
-  if (nwritten == -1) {
-    if (errno == EAGAIN) {
+    if (item_len - write_buf_.item_pos_ != 0) {
       return kWriteHalf;
-    } else {
-      // Here we should close the connection
-      return kWriteError;
     }
   }
-  if (wbuf_len_ == 0) {
-    return kWriteAll;
-  } else {
-    return kWriteHalf;
-  }
+  return kWriteAll;
 }
 
 void PbConn::set_is_reply(const bool is_reply) {
@@ -169,10 +166,12 @@ bool PbConn::is_reply() {
 }
 
 int PbConn::WriteResp(const std::string& resp) {
+
   std::string tag;
   BuildInternalTag(resp, &tag);
   slash::MutexLock l(&resp_mu_);
-  response_ = response_ + (tag + resp);
+  write_buf_.queue_.push(tag);
+  write_buf_.queue_.push(resp);
   set_is_reply(true);
   return 0;
 }
