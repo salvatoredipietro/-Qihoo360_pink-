@@ -3,17 +3,14 @@
 #include <unistd.h>
 #include <atomic>
 #include <map>
+#include <thread>
 
-#include "pink/include/server_thread.h"
+#include "pink/include/client_thread.h"
 #include "pink/include/pink_conn.h"
 #include "pink/include/redis_conn.h"
 #include "pink/include/pink_thread.h"
-#include "pink/src/holy_thread.h"
 
 using namespace pink;
-
-std::map<std::string, std::string> db;
-
 
 class MyConn: public RedisConn {
  public:
@@ -33,34 +30,13 @@ MyConn::MyConn(int fd, const std::string& ip_port,
   // Handle worker_specific_data ...
 }
 
+ClientThread* client;
+int sendto_port;
 int MyConn::DealMessage(const RedisCmdArgsType& argv, std::string* response) {
-  printf("Get redis message ");
-  for (int i = 0; i < argv.size(); i++) {
-    printf("%s ", argv[i].c_str());
-  }
-  printf("\n");
-
-  std::string val = "result";
-  std::string res;
-  // set command
-  if (argv.size() == 3) {
-    response->append("+OK\r\n");
-    db[argv[1]] = argv[2];
-  } else if (argv.size() == 2) {
-    std::map<std::string, std::string>::iterator iter = db.find(argv[1]);
-    if (iter != db.end()) {
-      const std::string& val = iter->second;
-      response->append("*1\r\n$");
-      response->append(std::to_string(val.length()));
-      response->append("\r\n");
-      response->append(val);
-      response->append("\r\n");
-    } else {
-      response->append("$-1\r\n");
-    }
-  } else {
-    response->append("+OK\r\n");
-  }
+  sleep(1);
+  std::cout << "DealMessage" << std::endl; 
+  std::string set = "*3\r\n$3\r\nSet\r\n$3\r\nabc\r\n$3\r\nabc\r\n"; 
+  client->Write("127.0.0.1", sendto_port, set);
   return 0;
 }
 
@@ -70,6 +46,25 @@ class MyConnFactory : public ConnFactory {
                                 Thread *thread,
                                 void* worker_specific_data, pink::PinkEpoll* pink_epoll=nullptr) const {
     return std::make_shared<MyConn>(connfd, ip_port, thread, worker_specific_data);
+  }
+};
+
+class MyClientHandle : public pink::ClientHandle {
+ public:
+  void CronHandle() const override {
+  }
+  void FdTimeoutHandle(int fd, const std::string& ip_port) const override;
+  void FdClosedHandle(int fd, const std::string& ip_port) const override;
+  bool AccessHandle(std::string& ip) const override {
+    return true;
+  }
+  int CreateWorkerSpecificData(void** data) const override {
+    return 0;
+  }
+  int DeleteWorkerSpecificData(void* data) const override {
+    return 0;
+  }
+  void DestConnectFailedHandle(std::string ip_port, std::string reason) const override {
   }
 };
 
@@ -89,31 +84,43 @@ static void SignalSetup() {
   signal(SIGTERM, &IntSigHandle);
 }
 
+bool first_time = true;
+void DoCronWork(ClientThread* client, int port) {
+  if (first_time) {
+    first_time = false;
+    std::string set = "*3\r\n$3\r\nSet\r\n$3\r\nabc\r\n$3\r\nabc\r\n"; 
+    client->Write("127.0.0.1", port, ping);
+  }
+}
+
 int main(int argc, char* argv[]) {
   if (argc < 2) {
-    printf("server will listen to 6379\n");
+    printf("client will send to 6379\n");
   } else {
-    printf("server will listen to %d\n", atoi(argv[1]));
+    printf("client will send to %d\n", atoi(argv[1]));
   }
-  int my_port = (argc > 1) ? atoi(argv[1]) : 6379;
+
+  sendto_port = (argc > 1) ? atoi(argv[1]) : 6379;
 
   SignalSetup();
-
+  
   ConnFactory *conn_factory = new MyConnFactory();
+  ClientHandle *handle = new ClientHandle();
 
-  ServerThread* my_thread = new HolyThread(my_port, conn_factory, 1000, NULL, false);
-  if (my_thread->StartThread() != 0) {
+  client = new ClientThread(conn_factory, 3000, 60, handle, NULL);
+  
+  if (client->StartThread() != 0) {
     printf("StartThread error happened!\n");
     exit(-1);
   }
   running.store(true);
   while (running.load()) {
     sleep(1);
+    DoCronWork(client, sendto_port);
   }
-  my_thread->StopThread();
 
-  delete my_thread;
+  client->StopThread();
+  delete client;
   delete conn_factory;
-
   return 0;
 }
