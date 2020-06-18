@@ -88,7 +88,7 @@ bool first_time = true;
 void DoCronWork(ClientThread* client, int port) {
   if (first_time) {
     first_time = false;
-    std::string set = "*3\r\n$3\r\nSet\r\n$3\r\nabc\r\n$3\r\nabc\r\n"; 
+    std::string ping = "*1\r\n$4\r\nPING\r\n";
     client->Write("127.0.0.1", port, ping);
   }
 }
