@@ -203,18 +203,12 @@ HandleType RedisConn::GetHandleType() {
   return handle_type_;
 }
 
-void RedisConn::AsynProcessRedisCmds(const std::vector<RedisCmdArgsType>& argvs, std::string* response) {
-  // If the current HandleType is kAsynchronous
-  // you need to implement this method yourself
+void RedisConn::ProcessRedisCmds(const std::vector<RedisCmdArgsType>& argvs, bool async, std::string* response) {
 }
 
 void RedisConn::NotifyEpoll(bool success) {
   PinkItem ti(fd(), ip_port(), success ? kNotiEpolloutAndEpollin : kNotiClose);
-  pink_epoll()->notify_queue_lock();
-  std::queue<PinkItem> *q = &(pink_epoll()->notify_queue_);
-  q->push(ti);
-  pink_epoll()->notify_queue_unlock();
-  write(pink_epoll()->notify_send_fd(), "", 1);
+  pink_epoll()->Register(ti, true);
 }
 
 int RedisConn::ParserDealMessageCb(RedisParser* parser, const RedisCmdArgsType& argv) {
@@ -228,9 +222,8 @@ int RedisConn::ParserDealMessageCb(RedisParser* parser, const RedisCmdArgsType& 
 
 int RedisConn::ParserCompleteCb(RedisParser* parser, const std::vector<RedisCmdArgsType>& argvs) {
   RedisConn* conn = reinterpret_cast<RedisConn*>(parser->data);
-  if (conn->GetHandleType() == HandleType::kAsynchronous) {
-    conn->AsynProcessRedisCmds(argvs, &(conn->response_));
-  }
+  bool async = conn->GetHandleType() == HandleType::kAsynchronous;
+  conn->ProcessRedisCmds(argvs, async, &(conn->response_));
   return 0;
 }
 

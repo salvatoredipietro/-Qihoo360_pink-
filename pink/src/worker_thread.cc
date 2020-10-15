@@ -16,6 +16,7 @@ namespace pink {
 
 WorkerThread::WorkerThread(ConnFactory *conn_factory,
                            ServerThread* server_thread,
+                           int queue_limit_,
                            int cron_interval)
       : private_data_(nullptr),
         server_thread_(server_thread),
@@ -25,7 +26,7 @@ WorkerThread::WorkerThread(ConnFactory *conn_factory,
   /*
    * install the protobuf handler here
    */
-  pink_epoll_ = new PinkEpoll();
+  pink_epoll_ = new PinkEpoll(queue_limit_);
 }
 
 WorkerThread::~WorkerThread() {
@@ -61,6 +62,20 @@ std::shared_ptr<PinkConn> WorkerThread::MoveConnOut(int fd) {
     conns_.erase(iter);
   }
   return conn;
+}
+
+bool WorkerThread::MoveConnIn(std::shared_ptr<PinkConn> conn, const NotifyType& notify_type, bool force) {
+  PinkItem it(conn->fd(), conn->ip_port(), notify_type);
+  bool success = MoveConnIn(it, force);
+  if (success) {
+    slash::WriteLock l(&rwlock_);
+    conns_[conn->fd()] = conn;
+  }
+  return success;
+}
+
+bool WorkerThread::MoveConnIn(const PinkItem& it, bool force) {
+  return pink_epoll_->Register(it, force);
 }
 
 void *WorkerThread::ThreadMain() {
@@ -107,13 +122,7 @@ void *WorkerThread::ThreadMain() {
             continue;
           } else {
             for (int32_t idx = 0; idx < nread; ++idx) {
-              {
-                pink_epoll_->notify_queue_lock();
-                ti = pink_epoll_->notify_queue_.front();
-                pink_epoll_->notify_queue_.pop();
-                pink_epoll_->notify_queue_unlock();
-              }
-
+              PinkItem ti = pink_epoll_->notify_queue_pop();
               if (ti.notify_type() == kNotiConnect) {
                 std::shared_ptr<PinkConn> tc = conn_factory_->NewPinkConn(
                     ti.fd(), ti.ip_port(),
@@ -144,6 +153,9 @@ void *WorkerThread::ThreadMain() {
                 pink_epoll_->PinkModEvent(ti.fd(), 0, EPOLLIN);
               } else if (ti.notify_type() == kNotiEpolloutAndEpollin) {
                 pink_epoll_->PinkModEvent(ti.fd(), 0, EPOLLOUT | EPOLLIN);
+              } else if (ti.notify_type() == kNotiWait) {
+                // do not register events
+                pink_epoll_->PinkAddEvent(ti.fd(), 0);
               }
             }
           }
@@ -156,13 +168,16 @@ void *WorkerThread::ThreadMain() {
         if (pfe == NULL) {
           continue;
         }
-        std::map<int, std::shared_ptr<PinkConn>>::iterator iter = conns_.find(pfe->fd);
-        if (iter == conns_.end()) {
-          pink_epoll_->PinkDelEvent(pfe->fd);
-          continue;
-        }
 
-        in_conn = iter->second;
+        {
+          slash::ReadLock l(&rwlock_);
+          std::map<int, std::shared_ptr<PinkConn>>::iterator iter = conns_.find(pfe->fd);
+          if (iter == conns_.end()) {
+            pink_epoll_->PinkDelEvent(pfe->fd);
+            continue;
+          }
+          in_conn = iter->second;
+        }
 
         if ((pfe->mask & EPOLLOUT) && in_conn->is_reply()) {
           WriteStatus write_status = in_conn->SendReply();
