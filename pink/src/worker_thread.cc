@@ -185,6 +185,9 @@ void *WorkerThread::ThreadMain() {
           if (write_status == kWriteAll) {
             pink_epoll_->PinkModEvent(pfe->fd, 0, EPOLLIN);
             in_conn->set_is_reply(false);
+            if (in_conn->IsClose()) {
+                 should_close = 1;
+            }
           } else if (write_status == kWriteHalf) {
             continue;
           } else {
@@ -214,6 +217,7 @@ void *WorkerThread::ThreadMain() {
             slash::WriteLock l(&rwlock_);
             conns_.erase(pfe->fd);
           }
+          should_close = 0;
         }
       }  // connection event
     }  // for (int i = 0; i < nfds; i++)

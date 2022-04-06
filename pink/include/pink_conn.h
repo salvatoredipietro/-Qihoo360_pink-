@@ -80,6 +80,9 @@ class PinkConn : public std::enable_shared_from_this<PinkConn> {
     return is_reply_;
   }
 
+  bool IsClose() { return close_; }
+  void SetClose(bool close) { close_ = close; }
+
   void set_last_interaction(const struct timeval &now) {
     last_interaction_ = now;
   }
@@ -115,6 +118,7 @@ class PinkConn : public std::enable_shared_from_this<PinkConn> {
   std::string ip_port_;
   bool is_reply_;
   bool is_writable_;
+  bool close_;
   struct timeval last_interaction_;
   int flags_;
 
