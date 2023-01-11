@@ -118,7 +118,7 @@ class PinkConn : public std::enable_shared_from_this<PinkConn> {
   std::string ip_port_;
   bool is_reply_;
   bool is_writable_;
-  bool close_;
+  bool close_{false};
   struct timeval last_interaction_;
   int flags_;
 
