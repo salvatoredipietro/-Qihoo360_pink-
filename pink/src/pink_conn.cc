@@ -24,6 +24,9 @@ PinkConn::PinkConn(const int fd,
       ssl_(nullptr),
 #endif
       thread_(thread),
+      is_writable_(false),
+      close_(false),
+      flags_(1),
       pink_epoll_(pink_epoll) {
   gettimeofday(&last_interaction_, nullptr);
 }
